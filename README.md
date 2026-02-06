@@ -1,1 +1,361 @@
-# IISC-code-final
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Microfluidic Chip Analyzer</title>
+<script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+
+<style>
+  body {
+    margin: 0;
+    font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    background: #f8fafc;
+    color: #1f2937;
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: auto;
+    padding: 40px 20px;
+  }
+
+  h1 {
+    text-align: center;
+    font-weight: 600;
+    margin-bottom: 40px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+  }
+
+  .card {
+    background: #ffffff;
+    border-radius: 14px;
+    padding: 25px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    border: 1px solid #e5e7eb;
+  }
+
+  .upload-box {
+    border: 2px dashed #9ca3af;
+    border-radius: 12px;
+    padding: 40px 20px;
+    text-align: center;
+    color: #6b7280;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    background: #f9fafb;
+  }
+
+  .upload-box:hover {
+    border-color: #3b82f6;
+    background: #eff6ff;
+    color: #1e40af;
+  }
+
+  canvas {
+    width: 100%;
+    margin-top: 20px;
+    border-radius: 12px;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+  }
+
+  .results-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 20px;
+  }
+
+  .results {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+  }
+
+  .result-card {
+    background: #f9fafb;
+    border-radius: 12px;
+    padding: 18px;
+    border: 1px solid #e5e7eb;
+  }
+
+  .result-card h3 {
+    margin: 0 0 10px 0;
+    font-weight: 500;
+    font-size: 16px;
+  }
+
+  .value {
+    font-size: 26px;
+    font-weight: 600;
+  }
+
+  .status-positive {
+    color: #059669;
+  }
+
+  .status-negative {
+    color: #dc2626;
+  }
+
+  .label {
+    font-size: 13px;
+    color: #6b7280;
+    margin-top: 6px;
+  }
+
+  .curve-title {
+    text-align: center;
+    font-size: 18px;
+    font-weight: 500;
+    margin-bottom: 15px;
+  }
+
+</style>
+</head>
+
+<body>
+<div class="container">
+  <h1>Microfluidic Chip Analyzer</h1>
+
+  <div class="grid">
+
+    <!-- LEFT: IMAGE UPLOAD -->
+    <div class="card">
+      <div class="upload-box" id="uploadBox">
+        📷 Click to upload chip image
+      </div>
+      <input type="file" id="fileInput" accept="image/*" style="display:none">
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <!-- RIGHT: RESULTS -->
+    <div class="card">
+      <div class="results-title">Analysis Results</div>
+      <div class="results" id="results" style="display:none;">
+        <div class="result-card">
+          <h3>Zone 1 — MDA Concentration</h3>
+          <div class="value" id="mdaValue">-- µM</div>
+          <div class="label" id="mdaDetails"></div>
+        </div>
+
+        <div class="result-card">
+          <h3>Zone 2 — Rheumatoid Factor (RF)</h3>
+          <div class="value" id="rfStatus">--</div>
+          <div class="label">Qualitative detection</div>
+        </div>
+
+        <div class="result-card">
+          <h3>Zone 3 — Anti-CCP</h3>
+          <div class="value" id="ccpStatus">--</div>
+          <div class="label">Qualitative detection</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- CALIBRATION CURVE -->
+  <div class="card" style="margin-top: 40px;">
+    <div class="curve-title">MDA Calibration Curve</div>
+    <div id="calibrationPlot" style="width:100%; height:450px;"></div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const fileInput = document.getElementById("fileInput");
+const uploadBox = document.getElementById("uploadBox");
+
+const mdaValue = document.getElementById("mdaValue");
+const mdaDetails = document.getElementById("mdaDetails");
+const rfStatus = document.getElementById("rfStatus");
+const ccpStatus = document.getElementById("ccpStatus");
+const resultsBox = document.getElementById("results");
+
+// Calibration: y = 0.073x - 0.0532
+const SLOPE = 0.073;
+const INTERCEPT = -0.0532;
+const R_SQUARED = 0.9865;
+
+// Example calibration points for plotting
+const calibrationData = [
+  {conc: 5, abs: 0.31},
+  {conc: 10, abs: 0.68},
+  {conc: 20, abs: 1.41},
+  {conc: 50, abs: 3.60},
+  {conc: 100, abs: 7.25}
+];
+
+// Trigger file input
+uploadBox.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", loadImage);
+
+// ---------------- IMAGE LOAD ----------------
+function loadImage(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    autoDetectZones();
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+// ---------------- AUTO ZONE DETECTION ----------------
+function autoDetectZones() {
+  const w = canvas.width;
+  const h = canvas.height;
+
+  const zones = {
+    1: ctx.getImageData(w * 0.45, h * 0.60, w * 0.10, h * 0.15),
+    2: ctx.getImageData(w * 0.20, h * 0.35, w * 0.10, h * 0.15),
+    3: ctx.getImageData(w * 0.70, h * 0.35, w * 0.10, h * 0.15)
+  };
+
+  drawZoneBoxes(w, h);
+  analyze(zones);
+}
+
+// ---------------- DRAW ZONE BOXES ----------------
+function drawZoneBoxes(w, h) {
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(w * 0.45, h * 0.60, w * 0.10, h * 0.15);
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 20px Arial';
+  ctx.fillText('1', w * 0.46, h * 0.62);
+
+  ctx.strokeStyle = '#22c55e';
+  ctx.strokeRect(w * 0.20, h * 0.35, w * 0.10, h * 0.15);
+  ctx.fillStyle = '#22c55e';
+  ctx.fillText('2', w * 0.21, h * 0.37);
+
+  ctx.strokeStyle = '#ef4444';
+  ctx.strokeRect(w * 0.70, h * 0.35, w * 0.10, h * 0.15);
+  ctx.fillStyle = '#ef4444';
+  ctx.fillText('3', w * 0.71, h * 0.37);
+}
+
+// ---------------- ANALYSIS ----------------
+function analyze(zones) {
+  const z1 = analyzeBlueHSV(zones[1]);
+  const z2 = analyzeBlueHSV(zones[2]);
+  const z3 = analyzeBlueHSV(zones[3]);
+
+  const absorbance = z1.blueIntensity;
+  const concentration = Math.max(0, (absorbance - INTERCEPT) / SLOPE);
+
+  mdaValue.textContent = `${concentration.toFixed(2)} µM`;
+  mdaDetails.textContent = `Blue Intensity: ${absorbance.toFixed(4)}`;
+
+  rfStatus.textContent = z2.blueDetected ? "Detected" : "Not detected";
+  rfStatus.className = `value ${z2.blueDetected ? "status-positive" : "status-negative"}`;
+
+  ccpStatus.textContent = z3.blueDetected ? "Detected" : "Not detected";
+  ccpStatus.className = `value ${z3.blueDetected ? "status-positive" : "status-negative"}`;
+
+  resultsBox.style.display = "grid";
+  drawCalibrationCurve(concentration, absorbance);
+}
+
+// ---------------- HSV BLUE DETECTION ----------------
+function analyzeBlueHSV(imageData) {
+  const data = imageData.data;
+  let bluePixels = 0;
+  let totalBlueIntensity = 0;
+  const total = data.length / 4;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] / 255;
+    const g = data[i + 1] / 255;
+    const b = data[i + 2] / 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+
+    let hue = 0;
+    if (delta !== 0) {
+      if (max === b) hue = ((r - g) / delta + 4) * 60;
+      else if (max === r) hue = ((g - b) / delta) * 60;
+      else hue = ((b - r) / delta + 2) * 60;
+    }
+
+    const saturation = max === 0 ? 0 : delta / max;
+    const value = max;
+
+    if (hue > 200 && hue < 260 && saturation > 0.3 && value > 0.2) {
+      bluePixels++;
+      totalBlueIntensity += value;
+    }
+  }
+
+  const blueIntensity = bluePixels > 0 ? totalBlueIntensity / bluePixels : 0;
+  const blueDetected = bluePixels > (total * 0.05);
+
+  return { blueIntensity, blueDetected };
+}
+
+// ---------------- CALIBRATION CURVE ----------------
+function drawCalibrationCurve(measuredConc, measuredAbs) {
+  const concRange = [];
+  const absRange = [];
+  for (let c = 0; c <= 120; c++) {
+    concRange.push(c);
+    absRange.push(SLOPE * c + INTERCEPT);
+  }
+
+  const calibrationTrace = {
+    x: concRange,
+    y: absRange,
+    type: 'scatter',
+    mode: 'lines',
+    name: 'Calibration Curve',
+    line: { width: 3 }
+  };
+
+  const pointsTrace = {
+    x: calibrationData.map(d => d.conc),
+    y: calibrationData.map(d => d.abs),
+    type: 'scatter',
+    mode: 'markers',
+    name: 'Calibration Points',
+    marker: { size: 10 }
+  };
+
+  const sampleTrace = {
+    x: [measuredConc],
+    y: [measuredAbs],
+    type: 'scatter',
+    mode: 'markers',
+    name: 'Your Sample',
+    marker: { size: 14, symbol: 'diamond' }
+  };
+
+  const layout = {
+    title: `y = ${SLOPE}x + (${INTERCEPT})<br>R² = ${R_SQUARED}`,
+    xaxis: { title: 'MDA Concentration (µM)' },
+    yaxis: { title: 'Absorbance' },
+    margin: { t: 80, b: 60, l: 60, r: 40 },
+    plot_bgcolor: '#ffffff',
+    paper_bgcolor: '#ffffff'
+  };
+
+  Plotly.newPlot('calibrationPlot', [calibrationTrace, pointsTrace, sampleTrace], layout, { responsive: true, displayModeBar: false });
+}
+
+// Initial empty plot
+drawCalibrationCurve(0, 0);
+</script>
+</body>
+</html>
